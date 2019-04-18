@@ -1,0 +1,143 @@
+#include <ESP8266WiFi.h> // Include the library for our ESP866 wifi microchip processor
+#include <ESP8266HTTPClient.h> //Include library required to setup the HTTP server 
+#include <ArduinoJson.h> //Include library that let's us parse and construct JSON objects 
+#include "Adafruit_Si7021.h" //Include librart for the SI7021 sensor 
+#include "config.h"
+#include <Servo.h> //Include servo library 
+
+// pin used to control the servo
+#define SERVO_PIN 2
+
+// create an instance of the servo class
+Servo servo;
+
+//Set up the 'servo' and 'Temperature' feeds
+AdafruitIO_Feed *servo_feed = io.feed("servo");
+AdafruitIO_Feed *temperature = io.feed("Temperature");
+
+const char* key = "400b2e0842d1df144f1d8429c8acf93c"; //Save our personal API key for later use 
+String weatherKey = "f709898e08d320ade1fda7be727be937"; //Save API needed to access weather data later 
+
+typedef struct { // Define a new data type that will hold our weather information
+  String tp; // Save temperature value 
+  String pr; // Save precipitation information
+  String hd; // Save humidity information 
+  String ws; // Save windspeed information 
+  String wd; // Save wind direction information 
+} MetData; // Assign this data structure a name for later use 
+MetData conditions; // Create an instance of the MetData type with the conditions variable 
+
+Adafruit_Si7021 sensor = Adafruit_Si7021();
+
+void setup() { //Call the setup function to start our sketch 
+  Serial.begin(115200); //Set the desired data for serial communication with computer
+
+  while(! Serial); //wait for serial monitor to open 
+
+  
+  // tell the servo class which pin we are using
+  servo.attach(SERVO_PIN);
+  
+// connect to io.adafruit.com
+  Serial.print("Connecting to Adafruit IO");
+  io.connect();
+
+   // Set up a message handler for the 'servo' feed. The handleMessage function (defined below) will be called whenever a message is
+  // received from adafruit io.
+  servo_feed->onMessage(handleMessage);
+
+    
+// wait for a connection
+  while(io.status() < AIO_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+   // we are connected
+  Serial.println();
+  Serial.println(io.statusText());
+
+ 
+
+  servo_feed->get();
+
+  if (!sensor.begin()) {
+    Serial.println("Did not find Si7021 sensor!");
+    while (true)
+      ;
+  }
+
+getMet(); // Function for HTTP request to get weather data using the city we saved in the location variable
+  // The weather data will then be saved in the conditions variable we defined earlier and the various strings saved within it can then be accessed by calling it 
+
+Serial.println(); // Skip a line in the serial monitor 
+Serial.println("The local weather in Seattle is " + conditions.tp + "F, with a humidity of " + conditions.hd + "%"); // Print temperature and humidity 
+
+  Serial.print("The following are indoor temperature and humidity values quantified by our sensor every 5 seconds");
+}
+
+void loop() {
+  Serial.println();
+  Serial.print("Humidity:    ");
+  Serial.print(sensor.readHumidity(), 2); //get humidity reading 
+  Serial.print("\tTemperature: ");
+  float celsius = sensor.readTemperature(); //get temperature reading
+  float fahrenheit = (celsius * 1.8) + 32; //convert to fahrenheit
+  Serial.print(fahrenheit);
+  Serial.println("F");
+  delay(5000); //Delay 5 seconds 
+  
+  // io.run(); is required for all sketches.
+  // It should always be present at the top of your loop function to keep the client connected to
+  // io.adafruit.com, and processes any incoming data.
+  io.run();
+
+  temperature->save(fahrenheit); //Save temperature to Adafruit IO 
+  delay(2000);
+}
+
+//This function is called whenever a 'servo' message is received from our IO dashboard. It was attached to
+// the servo feed in the setup() function above.
+void handleMessage(AdafruitIO_Data *data) {
+
+  // convert the data to integer
+  int angle = data->toInt();
+
+ //Make sure we don't exceed the limit of the servo since the range is from 0 to 180.
+  if(angle < 0)
+    angle = 0;
+  else if(angle > 180)
+    angle = 180;
+
+  servo.write(angle);
+
+}
+
+void getMet() { // HTTP request to get our weather data for Seattle from an API 
+  HTTPClient theClient; // Create mini http from the http library 
+  String apiCall = "http://api.openweathermap.org/data/2.5/weather?q=Seattle"; // Address where we will be obtaining our weather data
+  apiCall += "&units=imperial&appid="; //add this to the address
+  apiCall += weatherKey; //put in our weather key into address
+  theClient.begin(apiCall); // put in entire site where we will make our request 
+  int httpCode = theClient.GET(); //Make the request 
+  if (httpCode > 0) { //Check value of returned htttp value to see if successful or not 
+
+    if (httpCode == HTTP_CODE_OK) { 
+      String payload = theClient.getString(); // String that contains the json data
+      DynamicJsonBuffer jsonBuffer;
+      JsonObject& root = jsonBuffer.parseObject(payload); //Parse the Json data
+      if (!root.success()) { //Check to see if parse was successful 
+        Serial.println("parseObject() failed in getMet().");
+        //return;
+      }
+      conditions.tp = root["main"]["temp"].as<String>(); //Match key containing temperature value to that in the Json data
+      conditions.pr = root["main"]["pressure"].as<String>(); //Repeat 
+      conditions.hd = root["main"]["humidity"].as<String>();
+     // conditions.cd = root["weather"][0]["description"].as<String>();
+      conditions.ws = root["wind"]["speed"].as<String>();
+      int deg = root["wind"]["deg"].as<int>();
+    }
+  }
+  else {
+   Serial.printf("Something went wrong with connecting to the endpoint in getMet().");
+ } 
+}     
